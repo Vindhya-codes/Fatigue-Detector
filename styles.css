@@ -1,0 +1,13 @@
+#focus-overlay {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background: rgba(0, 0, 0, 0.75);
+  color: white;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  z-index: 999999;
+  pointer-events: none;
+  font-family: sans-serif;
+}
