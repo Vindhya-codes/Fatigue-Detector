@@ -1,5 +1,5 @@
 // ===============================
-/* ENHANCED FATIGUE DETECTOR - INTEGRATED VERSION WITH BUZZER & ACTIVITY OVERVIEW */
+/* FATIGUE DETECTOR */
 // ===============================
 
 
@@ -11,9 +11,8 @@ const ANALYSIS_INTERVAL = 30000;
 const BREAK_RESET_WINDOW = 120000;
 const LONG_IDLE_THRESHOLD = 180000;
 const MAX_EVENTS = 5000;
-const NAP_THRESHOLD = 750000; // 12.5 minutes (10-15 min range)
-const BUZZER_INTERVAL = 30000; // Buzz every 30s during nap mode
-
+const LONG_IDLE_BUZZ_THRESHOLD = 700000; // 12 minutes
+const BUZZER_INTERVAL = 30000;
 
 // STATE
 let events = [];
@@ -26,8 +25,8 @@ let breakTimer = null;
 let focusState = 'active';
 let pageContext = inferPageContext();
 let lastUserActivity = Date.now(); // Track ALL user activity including dismissals
-let napBuzzerTimer = null;
-let isNapMode = false;
+let idleBuzzerTimer = null;
+let isLongIdleState = false;
 let sessionStartTime = Date.now();
 let breakHistory = []; // Track breaks in last hour
 let fatigueHistory = []; // Track fatigue detection times
@@ -51,14 +50,13 @@ window.addEventListener("blur", () => {
 
 function updateLastActivity() {
   lastUserActivity = Date.now();
-  // Cancel nap buzzer if user becomes active
-  if (isNapMode && napBuzzerTimer) {
-    clearTimeout(napBuzzerTimer);
-    napBuzzerTimer = null;
-    isNapMode = false;
+
+  if (isLongIdleState && idleBuzzerTimer) {
+    clearTimeout(idleBuzzerTimer);
+    idleBuzzerTimer = null;
+    isLongIdleState = false;
   }
 }
-
 
 function updateFocusDisplay() {
   const indicator = document.getElementById('focus-indicator') || createFocusIndicator();
@@ -66,6 +64,10 @@ function updateFocusDisplay() {
   
   if (isMaximized) {
     showActivityOverview();
+  } else {
+    // Hide overview when minimized
+    const existingOverview = indicator.querySelector('.activity-overview');
+    if (existingOverview) existingOverview.remove();
   }
   
   // Update main indicator text
@@ -83,7 +85,7 @@ function createFocusIndicator() {
     <button id="maximize-btn" style="
       margin-left: 8px; padding: 2px 6px; background: rgba(255,255,255,0.2); 
       border: none; border-radius: 4px; color: white; font-size: 10px; cursor: pointer;
-    " title="View Activity Overview">📊</button>
+    " title="Toggle Activity Overview">📊</button>
   `;
   div.style.cssText = `
     position: fixed; top: 10px; right: 10px; 
@@ -93,10 +95,11 @@ function createFocusIndicator() {
   `;
   document.body.appendChild(div);
   
-  // Maximize button handler
+  // Toggle button handler - click to maximize/minimize
   div.querySelector('#maximize-btn').onclick = (e) => {
     e.stopPropagation();
-    div.classList.toggle('maximized');
+    const indicator = document.getElementById('focus-indicator');
+    indicator.classList.toggle('maximized');
     updateFocusDisplay();
   };
   
@@ -115,12 +118,12 @@ function showActivityOverview() {
   const recentFatigue = fatigueHistory.filter(f => now - f.time < 3600000); // Last hour fatigue detections
   const activityContext = getActivityContext(pageContext, sessionDuration);
   
-  // Format break times
+  // Format break times (show up to 3 most recent)
   const breakTimes = recentBreaks.slice(-3).map(b => 
     new Date(b.time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
   ).join(', ') || 'None';
   
-  // Format fatigue times
+  // Format fatigue times (show up to 3 most recent)
   const fatigueTimes = recentFatigue.slice(-3).map(f => 
     new Date(f.time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
   ).join(', ') || 'Never';
@@ -178,89 +181,124 @@ function recordFatigueEvent() {
 }
 
 
-function checkNapDetection() {
+// ... [Rest of the functions remain exactly the same - checkNapDetection, triggerNapBuzzer, etc.] ...
+
+function checkLongIdleBuzzer() {
   const idleTime = Date.now() - lastUserActivity;
-  
-  if (idleTime > NAP_THRESHOLD && !breakTimer && !isNapMode) {
-    // Enter nap mode
-    isNapMode = true;
-    console.log('😴 NAP MODE: No activity for 12.5+ minutes');
-    triggerNapBuzzer();
-  } else if (idleTime > NAP_THRESHOLD && isNapMode) {
-    // Continue nap mode - keep buzzing
-    if (!napBuzzerTimer) triggerNapBuzzer();
+
+  if (idleTime > LONG_IDLE_BUZZ_THRESHOLD && !breakTimer && !isLongIdleState) {
+    isLongIdleState = true;
+    console.log('🔕 LONG IDLE STATE TRIGGERED');
+    triggerIdleBuzzer();
+  } 
+  else if (idleTime > LONG_IDLE_BUZZ_THRESHOLD && isLongIdleState) {
+    if (!idleBuzzerTimer) triggerIdleBuzzer();
   }
 }
 
-
-function triggerNapBuzzer() {
-  // Simulate buzzer sound (multiple frequencies for attention)
+function triggerIdleBuzzer() {
   const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
   const playBuzzer = () => {
     const oscillator = audioContext.createOscillator();
     const gainNode = audioContext.createGain();
+
     oscillator.connect(gainNode);
     gainNode.connect(audioContext.destination);
-    
+
     oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
     oscillator.frequency.exponentialRampToValueAtTime(400, audioContext.currentTime + 0.3);
-    
+
     gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
     gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
-    
+
     oscillator.start(audioContext.currentTime);
     oscillator.stop(audioContext.currentTime + 0.3);
   };
-  
+
   playBuzzer();
-  
-  // Show nap nudge
-  showNapNudge();
-  
-  // Schedule next buzzer
-  napBuzzerTimer = setTimeout(triggerNapBuzzer, BUZZER_INTERVAL);
+  showLongIdleNudge();
+
+  idleBuzzerTimer = setTimeout(triggerIdleBuzzer, BUZZER_INTERVAL);
 }
 
+function showLongIdleNudge() {
+  if (document.querySelector('.idle-nudge')) return;
 
-function showNapNudge() {
-  if (document.querySelector('.nap-nudge')) return;
-  
   const box = document.createElement("div");
-  box.className = 'nap-nudge';
+  box.className = 'idle-nudge';
+
   box.innerHTML = `
     <div style="
-      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-      padding: 24px; background: linear-gradient(135deg, #ff6b6b, #ee5a52);
-      color: white; border-radius: 20px; z-index: 100001; max-width: 340px;
-      box-shadow: 0 20px 40px rgba(0,0,0,0.6); font-family: -apple-system, sans-serif;
-      font-size: 16px; text-align: center; animation: pulse 1s infinite;
+      position: fixed;
+      bottom: 30px;
+      right: 20px;
+      padding: 20px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border-radius: 16px;
+      z-index: 99999;
+      max-width: 320px;
+      box-shadow: 0 15px 35px rgba(0,0,0,0.4);
+      font-family: -apple-system, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      animation: subtlePulse 1.5s infinite;
     ">
-      <div style="font-size: 48px; margin-bottom: 12px;">😴</div>
-      <div>NAPPING DETECTED!</div>
-      <div style="font-size: 14px; opacity: 0.9; margin: 8px 0;">
-        Idle for ${Math.floor((Date.now() - lastUserActivity) / 60000)}min
+      <div style="font-size: 20px; margin-bottom: 6px;">
+        ⏳ Long Idle Detected
       </div>
-      <div style="margin-top: 16px;">
-        <button class="nap-dismiss" style="
-          padding: 12px 24px; background: rgba(255,255,255,0.3); 
-          border: none; border-radius: 8px; color: white; cursor: pointer; font-size: 14px;
-        ">I'm Awake! 💪</button>
+
+      <div style="opacity: 0.9; font-size: 13px;">
+        No activity for ${Math.floor((Date.now() - lastUserActivity) / 60000)} minutes
       </div>
+
+      <div style="margin-top: 12px; display: flex; gap: 8px;">
+        <button class="idle-resume" style="
+          flex: 1;
+          padding: 8px 12px;
+          background: rgba(255,255,255,0.2);
+          border: none;
+          border-radius: 6px;
+          color: white;
+          cursor: pointer;
+        ">
+          Resume
+        </button>
+
+        <button class="idle-dismiss" style="
+          padding: 8px 12px;
+          background: transparent;
+          border: 1px solid rgba(255,255,255,0.3);
+          border-radius: 6px;
+          color: white;
+          cursor: pointer;
+        ">
+          Dismiss
+        </button>
+      </div>
+
       <style>
-        @keyframes pulse { 0%, 100% { transform: translate(-50%, -50%) scale(1); }
-                          50% { transform: translate(-50%, -50%) scale(1.05); }
+        @keyframes subtlePulse {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.03); }
         }
       </style>
     </div>
   `;
+
   document.body.appendChild(box);
-  
-  box.querySelector('.nap-dismiss').onclick = () => {
+
+  box.querySelector('.idle-resume').onclick = () => {
+    updateLastActivity();
+    box.remove();
+  };
+
+  box.querySelector('.idle-dismiss').onclick = () => {
     updateLastActivity();
     box.remove();
   };
 }
-
 
 function inferPageContext() {
   const url = window.location.href.toLowerCase();
@@ -285,7 +323,6 @@ function inferPageContext() {
   return 'general';
 }
 
-
 function throttle(fn, delay, type) {
   let lastCall = 0;
   return function() {
@@ -297,16 +334,14 @@ function throttle(fn, delay, type) {
   };
 }
 
-
 function recordEvent(type) {
   if (breakTimer) return;
   const now = Date.now();
   events.push({ type, time: now, scrollY: window.scrollY });
-  updateLastActivity(); // Update activity timestamp
+  updateLastActivity();
   cleanupOldEvents();
   updateFocusDisplay();
 }
-
 
 function cleanupOldEvents() {
   const cutoff = Date.now() - Math.max(WINDOW_SIZE, BASELINE_WINDOW);
@@ -316,12 +351,10 @@ function cleanupOldEvents() {
   }
 }
 
-
 // FIXED ANALYSIS LOOP
 setInterval(analyzeActivity, ANALYSIS_INTERVAL);
 setInterval(updateFocusDisplay, 2000);
-setInterval(checkNapDetection, 30000); // Check for nap every 30s
-
+setInterval(checkLongIdleBuzzer, 30000);
 
 async function analyzeActivity() {
   if (breakTimer || isAnalyzing || isResetting) return;
@@ -364,7 +397,7 @@ async function analyzeActivity() {
   }
 
   if (fatigueWindows >= FATIGUE_CONFIRMATION_WINDOWS) {
-    recordFatigueEvent(); // Record fatigue detection time
+    recordFatigueEvent();
     await triggerContextualIntervention(current);
     fatigueWindows = 0;
     lastInterventionTime = Date.now();
@@ -375,13 +408,10 @@ async function analyzeActivity() {
   isAnalyzing = false;
 }
 
-
 function recordBreakEvent() {
   breakHistory.push({ time: Date.now(), type: 'fatigue' });
-  // Keep only last hour
   breakHistory = breakHistory.filter(b => Date.now() - b.time < 3600000);
 }
-
 
 function computeMetrics(data) {
   const idleGaps = [];
@@ -415,7 +445,6 @@ function computeMetrics(data) {
   };
 }
 
-
 function computeFatigueScore(current, base) {
   let score = 0;
   if (current.avgIdle > base.avgIdle * 1.8) score += 0.3;
@@ -424,7 +453,6 @@ function computeFatigueScore(current, base) {
   if (current.totalEvents < 15) score += 0.15;
   return Math.min(score, 1);
 }
-
 
 async function triggerContextualIntervention(metrics) {
   if (document.querySelector('.fatigue-nudge')) return;
@@ -440,7 +468,6 @@ async function triggerContextualIntervention(metrics) {
   showSmartNudge(nudges[pageContext] || nudges.general, nudgeType);
 }
 
-
 function showContextualNudge(type) {
   const stuckNudges = {
     learning: "⏳ Been on this lesson 3+ mins without progress. Need help or try easier exercises?",
@@ -452,30 +479,27 @@ function showContextualNudge(type) {
   showSmartNudge(stuckNudges[pageContext] || stuckNudges.general, 'stuck');
 }
 
-
 function showSmartNudge(msg, type) {
   const box = document.createElement("div");
   box.className = 'fatigue-nudge';
-  updateLastActivity(); // Any interaction counts as activity
+  updateLastActivity();
   
   box.innerHTML = `
-    <div style="
-      position: fixed; bottom: 30px; right: 20px; 
-      padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    <div style="position: fixed; bottom: 30px; right: 20px; padding: 20px; 
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
       color: white; border-radius: 16px; z-index: 99999; max-width: 320px;
       box-shadow: 0 15px 35px rgba(0,0,0,0.4); font-family: -apple-system, sans-serif;
-      font-size: 14px; line-height: 1.5;
-    ">
+      font-size: 14px; line-height: 1.5;">
       ${msg}
       <div style="margin-top: 12px; display: flex; gap: 8px;">
-        <button class="break-btn" style="
-          flex: 1; padding: 8px 12px; background: rgba(255,255,255,0.2); 
-          border: none; border-radius: 6px; color: white; cursor: pointer;
-        ">Take Break (2:00)</button>
-        <button class="dismiss-btn" style="
-          padding: 8px 12px; background: transparent; border: 1px solid rgba(255,255,255,0.3); 
-          border-radius: 6px; color: white; cursor: pointer;
-        ">Dismiss</button>
+        <button class="break-btn" style="flex: 1; padding: 8px 12px; background: rgba(255,255,255,0.2); 
+          border: none; border-radius: 6px; color: white; cursor: pointer;">
+          Take Break (2:00)
+        </button>
+        <button class="dismiss-btn" style="padding: 8px 12px; background: transparent; 
+          border: 1px solid rgba(255,255,255,0.3); border-radius: 6px; color: white; cursor: pointer;">
+          Dismiss
+        </button>
       </div>
     </div>
   `;
@@ -492,9 +516,8 @@ function showSmartNudge(msg, type) {
   }, 12000);
 }
 
-
 function takeBreak() {
-  updateLastActivity(); // Break initiation counts as activity
+  updateLastActivity();
   if (breakTimer) {
     clearTimeout(breakTimer);
     if (document.getElementById('break-countdown')) {
@@ -540,13 +563,12 @@ function takeBreak() {
   resetDetector();
 }
 
-
 function resetDetector() {
   events = [];
   fatigueWindows = 0;
   isResetting = true;
   baseline = null;
-  sessionStartTime = Date.now(); // Reset session timer
+  sessionStartTime = Date.now();
   setTimeout(() => {
     isResetting = false;
     if (!breakTimer) {
@@ -554,7 +576,6 @@ function resetDetector() {
     }
   }, 5000);
 }
-
 
 function showConfirmation(msg) {
   const toast = document.createElement('div');
@@ -571,17 +592,14 @@ function showConfirmation(msg) {
   }, 4000);
 }
 
-
 function showStatus(msg) {
   console.log(`[FatigueDetector] ${msg}`);
 }
-
 
 function updateFocusState() {
   focusState = document.visibilityState === 'visible' ? 'active' : 'inactive';
   updateLastActivity();
 }
-
 
 function average(arr) {
   return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
